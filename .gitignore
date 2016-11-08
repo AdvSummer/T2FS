@@ -1,0 +1,9 @@
+bin/*
+
+teste/*
+!teste/*.c
+!teste/Makefile
+
+lib/*
+!lib/apidisk.o
+!lib/bitmap2.o
