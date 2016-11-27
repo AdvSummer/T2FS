@@ -24,5 +24,5 @@ $(BIN)%.o: $(SRC)%.c
 	$(CC) $(CCFLAGS) -o $@ -c $<
 
 clean:
-	find $(BIN) $(LIB) $(TST) -type f \
-	! -name 'apidisk.o' ! -name 'bitmap2.o' ! -name "*.c" -delete
+	find $(BIN) $(LIB) -type f \
+	! -name 'apidisk.o' ! -name 'bitmap2.o' -delete
