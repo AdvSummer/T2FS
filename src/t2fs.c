@@ -2,33 +2,90 @@
 #include <apidisk.h>
 #include <bitmap2.h>
 
+#include <stdlib.h>
+#include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
+
+#define MAX_OPEN_FILES 20
+#define RECORD_SIZE 64
+
+typedef struct t2fs_superbloco superblock_t;
+typedef struct t2fs_record record_t;
+typedef struct t2fs_inode inode_t;
 
 static bool t2fs_init = false;
 
-static struct t2fs_superbloco *superblock;
+static superblock_t *superblock = 0;
+static record_t *root = 0;
 
-void initialize();
-struct t2fs_superbloco* get_superblock();
+static int inode_area = 0;
+static int block_area = 0;
 
-void initialize() {
-    superblock = get_superblock();
+static struct files {
+    record_t *dir;
+    record_t *file;
+} files[MAX_OPEN_FILES] = {{0}};
+
+int initialize();
+int get_superblock(superblock_t *sb);
+
+int get_inode(int inode_number, inode_t *inode);
+int set_inode(int inode_number, inode_t *inode);
+
+int get_record(int block_number, int record_number, record_t *file);
+int set_record(int block_number, int record_number, record_t *file);
+
+int get_ind(int block_number, int ind_number);
+int set_ind(int block_number, int ind_number, int ind_block);
+
+int load_file(char *filename, record_t *dir, record_t *file);
+int load_dir(char *filename, record_t *file);
+int load_block(char *filename, int block_number, record_t *file);
+int load_single_ind(char *filename, int block_number, record_t *file);
+int load_double_ind(char *filename, int block_number, record_t *file);
+
+int save_file(record_t *file, record_t *dir);
+int save_block(record_t *file, int block_number);
+int save_single_ind(record_t *file, int block_number);
+int save_double_ind(record_t *file, int block_number);
+
+int search_free_inode();
+
+int initialize() {
+    superblock = (superblock_t*)malloc(sizeof(superblock_t));
+    if (get_superblock(superblock) != 0) {
+        free(superblock);
+        return -1;
+    }
+
+    inode_area = superblock->superblockSize
+                 + superblock->freeInodeBitmapSize
+                 + superblock->freeBlocksBitmapSize;
+    block_area = inode_area + superblock->inodeAreaSize;
+
+    root = (record_t*)malloc(sizeof(record_t));
+    root->TypeVal = TYPEVAL_DIRETORIO;
+    strncpy(root->name, "/\0", 2);
+    root->blocksFileSize = 1;
+    root->bytesFileSize = superblock->blockSize*SECTOR_SIZE;
+    root->inodeNumber = 0;
 
     t2fs_init = true;
+
+    return 0;
 }
 
-struct t2fs_superbloco* get_superblock() {
-    struct t2fs_superbloco* sb = malloc(sizeof(struct t2fs_superbloco));
-
-    char sector[SECTOR_SIZE];
+int get_superblock(superblock_t* sb) {
+    unsigned char sector[SECTOR_SIZE];
     if (read_sector(0, sector) != 0) {
-        return 0;
+        return -1;
     }
 
     int offset = 0;
 
     //id
-    strncpy(sb->id, sector, 4);
+    memcpy(sb->id, sector, 4);
     offset += 4;
 
     //version
@@ -61,12 +118,426 @@ struct t2fs_superbloco* get_superblock() {
                    | sector[offset + 2] << 16
                    | sector[offset + 3] << 24;
 
-    return sb;
+    return 0;
+}
+
+int get_inode(int inode_number, inode_t *inode) {
+    unsigned char sector[SECTOR_SIZE];
+    if (read_sector(inode_area + inode_number / 16, sector) != 0) {
+        return -1;
+    }
+
+    int offset = (inode_number % 16) * sizeof(inode_t);
+    inode->dataPtr[0] = sector[offset]
+                        | sector[offset + 1] << 8
+                        | sector[offset + 2] << 16
+                        | sector[offset + 3] << 24;
+    offset += 4;
+
+    inode->dataPtr[1] = sector[offset]
+                        | sector[offset + 1] << 8
+                        | sector[offset + 2] << 16
+                        | sector[offset + 3] << 24;
+    offset += 4;
+
+    inode->singleIndPtr = sector[offset]
+                          | sector[offset + 1] << 8
+                          | sector[offset + 2] << 16
+                          | sector[offset + 3] << 24;
+    offset += 4;
+
+    inode->doubleIndPtr = sector[offset]
+                          | sector[offset + 1] << 8
+                          | sector[offset + 2] << 16
+                          | sector[offset + 3] << 24;
+
+    return 0;
+}
+
+int set_inode(int inode_number, inode_t *inode) {
+    unsigned char sector[SECTOR_SIZE];
+    int sector_number = inode_area + inode_number / 16;
+    if (read_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+
+    int offset = (inode_number % 16) * sizeof(inode_t);
+    sector[offset++] = inode->dataPtr[0] & 0xFF;
+    sector[offset++] = (inode->dataPtr[0] >> 8) & 0xFF;
+    sector[offset++] = (inode->dataPtr[0] >> 16) & 0xFF;
+    sector[offset++] = (inode->dataPtr[0] >> 24) & 0xFF;
+
+    sector[offset++] = inode->dataPtr[1] & 0xFF;
+    sector[offset++] = (inode->dataPtr[1] >> 8) & 0xFF;
+    sector[offset++] = (inode->dataPtr[1] >> 16) & 0xFF;
+    sector[offset++] = (inode->dataPtr[1] >> 24) & 0xFF;
+
+    sector[offset++] = inode->singleIndPtr & 0xFF;
+    sector[offset++] = (inode->singleIndPtr >> 8) & 0xFF;
+    sector[offset++] = (inode->singleIndPtr >> 16) & 0xFF;
+    sector[offset++] = (inode->singleIndPtr >> 24) & 0xFF;
+
+    sector[offset++] = inode->doubleIndPtr & 0xFF;
+    sector[offset++] = (inode->doubleIndPtr >> 8) & 0xFF;
+    sector[offset++] = (inode->doubleIndPtr >> 16) & 0xFF;
+    sector[offset++] = (inode->doubleIndPtr >> 24) & 0xFF;
+
+    if (write_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int get_record(int block_number, int record_number, record_t* file) {
+    unsigned char sector[SECTOR_SIZE];
+    unsigned int sector_number = block_area
+                                 + block_number * superblock->blockSize
+                                 + record_number / 4;
+    if (read_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+
+    int offset = (record_number % 4) * RECORD_SIZE;
+    file->TypeVal = sector[offset];
+    offset += 1;
+
+    if (file->TypeVal == TYPEVAL_INVALIDO) {
+        return -1;
+    }
+
+    memcpy(file->name, sector + offset, 32);
+    offset += 32;
+
+    file->blocksFileSize = sector[offset]
+                           | sector[offset + 1] << 8
+                           | sector[offset + 2] << 16
+                           | sector[offset + 3] << 24;
+    offset += 4;
+
+    file->bytesFileSize = sector[offset]
+                          | sector[offset + 1] << 8
+                          | sector[offset + 2] << 16
+                          | sector[offset + 3] << 24;
+    offset += 4;
+
+    file->inodeNumber = sector[offset]
+                        | sector[offset + 1] << 8
+                        | sector[offset + 2] << 16
+                        | sector[offset + 3] << 24;
+
+    return 0;
+}
+
+int set_record(int block_number, int record_number, record_t *file) {
+    unsigned char sector[SECTOR_SIZE];
+    unsigned int sector_number = block_area
+                                 + block_number * superblock->blockSize
+                                 + record_number / 4;
+    if (read_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+
+    int offset = (record_number % 4) * RECORD_SIZE;
+    sector[offset++] = file->TypeVal;
+
+    memcpy(sector + offset, file->name, 32);
+    offset += 32;
+
+    sector[offset++] = file->blocksFileSize & 0xFF;
+    sector[offset++] = (file->blocksFileSize >> 8) & 0xFF;
+    sector[offset++] = (file->blocksFileSize >> 16) & 0xFF;
+    sector[offset++] = (file->blocksFileSize >> 24) & 0xFF;
+
+    sector[offset++] = file->bytesFileSize & 0xFF;
+    sector[offset++] = (file->bytesFileSize >> 8) & 0xFF;
+    sector[offset++] = (file->bytesFileSize >> 16) & 0xFF;
+    sector[offset++] = (file->bytesFileSize >> 24) & 0xFF;
+
+    sector[offset++] = file->inodeNumber & 0xFF;
+    sector[offset++] = (file->inodeNumber >> 8) & 0xFF;
+    sector[offset++] = (file->inodeNumber >> 16) & 0xFF;
+    sector[offset++] = (file->inodeNumber >> 24) & 0xFF;
+
+    if (write_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int get_ind(int block_number, int ind_number) {
+    unsigned char sector[SECTOR_SIZE];
+    unsigned int sector_number = block_area
+                                 + block_number * superblock->blockSize
+                                 + ind_number / 64;
+    if (read_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+
+    int offset = (ind_number % 64) * 4;
+    int ind = sector[offset]
+              | sector[offset + 1] << 8
+              | sector[offset + 2] << 16
+              | sector[offset + 3] << 24;
+
+    return ind;
+}
+
+int set_ind(int block_number, int ind_number, int ind_block) {
+    unsigned char sector[SECTOR_SIZE];
+    unsigned int sector_number = block_area
+                                 + block_number * superblock->blockSize
+                                 + ind_number / 64;
+    if (read_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+
+    int offset = (ind_number % 64) * 4;
+    sector[offset++] = ind_block & 0xFF;
+    sector[offset++] = (ind_block >> 8) & 0xFF;
+    sector[offset++] = (ind_block >> 16) & 0xFF;
+    sector[offset++] = (ind_block >> 24) & 0xFF;
+
+    if (write_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int load_file(char *filename, record_t *dir, record_t *file) {
+    if (filename[0] != '/') {
+        printf("not an absolute path\n");
+        return -1;
+    }
+    printf("load file %s\n", filename);
+
+    *file = *root;
+    char *buffer = (char*)malloc(sizeof(char) * strlen(filename) + 1);
+    char *begin = filename + 1;
+    char *end;
+    do {
+        end = strchr(begin, '/');
+        if (end == 0) {
+            *dir = *file;
+            end = begin + strlen(begin);
+        }
+
+        memcpy(buffer, begin, end - begin);
+        buffer[end - begin] = 0;
+
+        printf("search file %s\n", buffer);
+        if (load_dir(buffer, file) != 0) {
+            printf("file %s not found\n", buffer);
+            free(buffer);
+            return -1;
+        } else {
+            begin = end + 1;
+        }
+    } while (end != filename + strlen(filename));
+
+    printf("files %s and %s opened\n", dir->name, file->name);
+
+    free(buffer);
+    return 0;
+}
+
+int load_dir(char *filename, record_t *file) {
+    if (file->TypeVal != TYPEVAL_DIRETORIO) {
+        return -1;
+    }
+
+    inode_t inode;
+    if (get_inode(file->inodeNumber, &inode) != 0) {
+        printf("inode %d is invalid\n", file->inodeNumber);
+        return -1;
+    }
+
+    if (load_block(filename, inode.dataPtr[0], file) == 0) {
+        printf("file %s found on block %d\n", filename, inode.dataPtr[0]);
+        return 0;
+    }
+
+    if (load_block(filename, inode.dataPtr[1], file) == 0) {
+        return 0;
+    }
+
+    if (load_single_ind(filename, inode.singleIndPtr, file) == 0) {
+        return 0;
+    }
+
+    if (load_double_ind(filename, inode.doubleIndPtr, file) == 0) {
+        return 0;
+    }
+
+    return -1;
+}
+
+int load_block(char *filename, int block_number, record_t *file) {
+    if (block_number == INVALID_PTR) {
+        return -1;
+    }
+
+    int i;
+    for (i = 0; i < 64; ++i) {
+        if (get_record(block_number, i, file) == 0) {
+            printf("compare %s %s\n", file->name, filename);
+            if (strcmp(file->name, filename) == 0) {
+                return 0;
+            }
+        }
+    }
+
+    return -1;
+}
+
+int load_single_ind(char *filename, int block_number, record_t *file) {
+    if (block_number == INVALID_PTR) {
+        return -1;
+    }
+
+    int i;
+    int ind;
+    for (i = 0; i < 1024; ++i) {
+        ind = get_ind(block_number, i);
+        if (ind == INVALID_PTR) {
+            return -1;
+        }
+
+        if (load_block(filename, ind, file) == 0) {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+int load_double_ind(char *filename, int block_number, record_t *file) {
+    if (block_number == INVALID_PTR) {
+        return -1;
+    }
+
+    int i;
+    int ind;
+    for (i = 0; i < 1024; ++i) {
+        ind = get_ind(block_number, i);
+        if (ind == INVALID_PTR) {
+            return -1;
+        }
+
+        if (load_single_ind(filename, ind, file) == 0) {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+int save_file(record_t *file, record_t *dir) {
+    if (file->TypeVal != TYPEVAL_REGULAR ||
+        dir->TypeVal != TYPEVAL_DIRETORIO) {
+        return -1;
+    }
+
+    inode_t inode;
+    if (get_inode(dir->inodeNumber, &inode) != 0) {
+        return -1;
+    }
+
+    if (inode.dataPtr[0] == INVALID_PTR) {
+        inode.dataPtr[0] = searchBitmap2(BITMAP_DADOS, 0);
+    }
+    if (save_block(file, inode.dataPtr[0]) != 0) {
+
+        if (inode.dataPtr[0] == INVALID_PTR) {
+            inode.dataPtr[0] = searchBitmap2(BITMAP_DADOS, 0);
+        }
+        if (save_block(file, inode.dataPtr[1]) != 0) {
+
+            if (inode.singleIndPtr == INVALID_PTR) {
+                inode.singleIndPtr = searchBitmap2(BITMAP_DADOS, 0);
+            }
+            if (save_single_ind(file, inode.singleIndPtr) != 0) {
+
+                if (inode.doubleIndPtr == INVALID_PTR) {
+                    inode.doubleIndPtr = searchBitmap2(BITMAP_DADOS, 0);
+                }
+                if (save_double_ind(file, inode.doubleIndPtr) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+
+    set_inode(dir->inodeNumber, &inode);
+
+    return 0;
+}
+
+int save_block(record_t *file, int block_number) {
+    if (block_number == INVALID_PTR) {
+        return -1;
+    }
+
+    int i;
+    record_t record;
+    for (i = 0; i < 64; ++i) {
+        if (get_record(block_number, i, &record) != 0) {
+            if (set_record(block_number, i, file) == 0) {
+                return 0;
+            }
+        }
+    }
+
+    return -1;
+}
+
+int save_single_ind(record_t *file, int block_number) {
+    if (block_number == INVALID_PTR) {
+        return -1;
+    }
+
+    int i;
+    int ind;
+    for (i = 0; i < 1024; ++i) {
+        ind = get_ind(block_number, i);
+        if (ind == INVALID_PTR) {
+            ind = searchBitmap2(BITMAP_DADOS, 0);
+            set_ind(block_number, i, ind);
+        }
+        if (save_block(file, ind) == 0) {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+int save_double_ind(record_t *file, int block_number) {
+    if (block_number == INVALID_PTR) {
+        return -1;
+    }
+
+    int i;
+    int ind;
+    for (i = 0; i < 1024; ++i) {
+        ind = get_ind(block_number, i);
+        if (ind == INVALID_PTR) {
+            ind = searchBitmap2(BITMAP_DADOS, 0);
+            set_ind(block_number, i, ind);
+        }
+        if (save_single_ind(file, ind) == 0) {
+            return 0;
+        }
+    }
+
+    return -1;
 }
 
 int identify2(char *name, int size) {
-    char names = "Leonardo Abreu Nahra: 242256\n" \
-                 "Pedro Frederico Kampmann: 242244\n";
+    const char *names = "Leonardo Abreu Nahra: 242256\n" \
+                        "Pedro Frederico Kampmann: 242244\n";
     strncpy(name, names, size);
     return 0;
 }
@@ -75,17 +546,115 @@ FILE2 create2(char *filename) {
     if (!t2fs_init) {
         initialize();
     }
+
+    if (filename[0] != '/') {
+        printf("not an absolute path\n");
+        return -1;
+    }
+
+    int i;
+    for (i = 0; i < MAX_OPEN_FILES; ++i) {
+        if (files[i].file == 0) {
+            break;
+        }
+    }
+    if (i == MAX_OPEN_FILES) {
+        return -1;
+    }
+
+    int inode_number = searchBitmap2(BITMAP_INODE, 0);
+    if (inode_number < 0) {
+        return -1;
+    }
+    printf("inode %d is free\n", inode_number);
+
+    record_t *dir = (record_t*)malloc(RECORD_SIZE);
+    record_t *file = (record_t*)malloc(RECORD_SIZE);
+    if (load_file(filename, dir, file) == 0) {
+        printf("file %s already exists\n", filename);
+        free(dir);
+        free(file);
+        return -1;
+    }
+
+    char *begin = filename + 1;
+    char *end;
+    do {
+        end = strchr(begin, '/');
+        if (end == 0) {
+            end = begin + strlen(begin);
+        }
+    } while (end != filename + strlen(filename));
+
+    file->TypeVal = TYPEVAL_REGULAR;
+    memcpy(file->name, begin, end - begin);
+    file->name[end - begin] = 0;
+    file->blocksFileSize = 0;
+    file->bytesFileSize = 0;
+    file->inodeNumber = inode_number;
+
+    inode_t inode;
+    inode.dataPtr[0] = INVALID_PTR;
+    inode.dataPtr[1] = INVALID_PTR;
+    inode.singleIndPtr = INVALID_PTR;
+    inode.doubleIndPtr = INVALID_PTR;
+    if (set_inode(inode_number, &inode) != 0) {
+        free(dir);
+        free(file);
+        return -1;
+    }
+
+    if (save_file(file, dir) != 0) {
+        free(dir);
+        free(file);
+        return -1;
+    }
+
+    if (setBitmap2(BITMAP_INODE, inode_number, 1) != 0) {
+        free(dir);
+        free(file);
+        return -1;
+    }
+
+    files[i].dir = dir;
+    files[i].file = file;
+
+    return i;
 }
 
 int delete2(char *filename) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 FILE2 open2(char *filename) {
     if (!t2fs_init) {
         initialize();
+    }
+
+    int i;
+    for (i = 0; i < MAX_OPEN_FILES; ++i) {
+        if (files[i].file == 0) {
+            break;
+        }
+    }
+    if (i == MAX_OPEN_FILES) {
+        return -1;
+    }
+
+    record_t *dir = (record_t*)malloc(RECORD_SIZE);
+    record_t *file = (record_t*)malloc(RECORD_SIZE);
+    if (load_file(filename, dir, file) == 0 &&
+        file->TypeVal == TYPEVAL_REGULAR) {
+        files[i].dir = dir;
+        files[i].file = file;
+        return i;
+    } else {
+        free(file);
+        return -1;
     }
 }
 
@@ -93,58 +662,78 @@ int close2(FILE2 handle) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 int read2(FILE2 handle, char *buffer, int size) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 int write2(FILE2 handle, char *buffer, int size) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 int truncate2(FILE2 handle) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 int seek2(FILE2 handle, DWORD offset) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 int mkdir2(char *pathname) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 int rmdir2(char *pathname) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 DIR2 opendir2(char *pathname) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 int readdir2(DIR2 handle, DIRENT2 *dentry) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
 
 int closedir2(DIR2 handle) {
     if (!t2fs_init) {
         initialize();
     }
+
+    return 0;
 }
