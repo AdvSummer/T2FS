@@ -27,6 +27,11 @@ static struct files {
     record_t *file;
 } files[MAX_OPEN_FILES] = {{0}};
 
+static struct dirs {
+    record_t *dir;
+    int p;
+} dirs[MAX_OPEN_FILES] = {{0}};
+
 int initialize();
 int get_superblock(superblock_t *sb);
 
@@ -542,7 +547,6 @@ int save_block(record_t *file, int block_number) {
     for (i = 0; i < 64; ++i) {
         if (get_record(block_number, i, &record) != 0 ||
             strcmp(file->name, record.name) == 0) {
-            printf("compare %s and %s\n", file->name, record.name);
             if (set_record(block_number, i, file) == 0) {
                 return 0;
             }
@@ -732,6 +736,7 @@ FILE2 open2(char *filename) {
         return i;
     } else {
         free(file);
+        free(dir);
         return -1;
     }
 }
@@ -740,6 +745,23 @@ int close2(FILE2 handle) {
     if (!t2fs_init) {
         initialize();
     }
+
+    record_t *file = files[handle].file;
+    record_t *dir = files[handle].dir;
+
+    if (file == 0) {
+        printf("no file opened with handle %d\n", handle);
+        return -1;
+    }
+
+    if (save_file(file, dir) != 0) {
+        return -1;
+    }
+
+    free(file);
+    free(dir);
+    file = 0;
+    dir = 0;
 
     return 0;
 }
@@ -781,12 +803,90 @@ int mkdir2(char *pathname) {
         initialize();
     }
 
+    if (pathname[0] != '/') {
+        printf("not an absolute path\n");
+        return -1;
+    }
+
+    int inode_number = searchBitmap2(BITMAP_INODE, 0);
+    if (inode_number < 0) {
+        return -1;
+    }
+    printf("inode %d is free\n", inode_number);
+
+    record_t *dir = (record_t*)malloc(RECORD_SIZE);
+    record_t *file = (record_t*)malloc(RECORD_SIZE);
+    if (load_file(pathname, dir, file) == 0) {
+        printf("dir %s already exists\n", pathname);
+        free(dir);
+        free(file);
+        return -1;
+    }
+
+    char *begin = pathname + 1;
+    char *end;
+    do {
+        end = strchr(begin, '/');
+        if (end == 0) {
+            end = begin + strlen(begin);
+            break;
+        }
+        begin = end + 1;
+    } while (end != pathname + strlen(pathname));
+
+    file->TypeVal = TYPEVAL_DIRETORIO;
+    memcpy(file->name, begin, end - begin);
+    file->name[end - begin] = 0;
+    file->blocksFileSize = 1;
+    file->bytesFileSize = superblock->blockSize*SECTOR_SIZE;
+    file->inodeNumber = inode_number;
+
+    inode_t inode;
+    inode.dataPtr[0] = INVALID_PTR;
+    inode.dataPtr[1] = INVALID_PTR;
+    inode.singleIndPtr = INVALID_PTR;
+    inode.doubleIndPtr = INVALID_PTR;
+
+    printf("saving inode %d\n", inode_number);
+    if (set_inode(inode_number, &inode) != 0) {
+        free(dir);
+        free(file);
+        return -1;
+    }
+
+    printf("saving file %s in %s\n", file->name, dir->name);
+    if (save_file(file, dir) != 0) {
+        free(dir);
+        free(file);
+        return -1;
+    }
+
+    if (setBitmap2(BITMAP_INODE, inode_number, 1) != 0) {
+        free(dir);
+        free(file);
+        return -1;
+    }
+
     return 0;
 }
 
 int rmdir2(char *pathname) {
     if (!t2fs_init) {
         initialize();
+    }
+
+    record_t dir;
+    record_t file;
+    if (load_file(pathname, &dir, &file) != 0) {
+        printf("dir %s doesn't exist\n", pathname);
+        return -1;
+    }
+
+    file.TypeVal = TYPEVAL_INVALIDO;
+    free_inode(file.inodeNumber);
+
+    if (save_file(&file, &dir) != 0) {
+        return -1;
     }
 
     return 0;
@@ -797,6 +897,28 @@ DIR2 opendir2(char *pathname) {
         initialize();
     }
 
+    int i;
+    for (i = 0; i < MAX_OPEN_FILES; ++i) {
+        if (dirs[i].dir == 0) {
+            break;
+        }
+    }
+    if (i == MAX_OPEN_FILES) {
+        return -1;
+    }
+
+    record_t dir;
+    record_t *file = (record_t*)malloc(RECORD_SIZE);
+    if (load_file(pathname, &dir, file) == 0 &&
+        file->TypeVal == TYPEVAL_DIRETORIO) {
+        dirs[i].dir = file;
+        dirs[i].p = 0;
+        return i;
+    } else {
+        free(file);
+        return -1;
+    }
+
     return 0;
 }
 
@@ -805,6 +927,29 @@ int readdir2(DIR2 handle, DIRENT2 *dentry) {
         initialize();
     }
 
+    record_t *dir = dirs[handle].dir;
+    if (dir == 0) {
+        printf("no dir opened with handle %d\n", handle);
+        return -1;
+    }
+
+    inode_t inode;
+    if (get_inode(dir->inodeNumber, &inode) != 0) {
+        return -1;
+    }
+
+    int p = dirs[handle].p;
+    record_t file;
+    if (get_record(inode.dataPtr[0], p, &file) != 0) {
+        return -1;
+    }
+
+    dirs[handle].p++;
+    memcpy(dentry->name, file.name, strlen(file.name));
+    dentry->name[strlen(file.name)] = 0;
+    dentry->fileType = file.TypeVal;
+    dentry->fileSize = file.bytesFileSize;
+
     return 0;
 }
 
@@ -812,6 +957,15 @@ int closedir2(DIR2 handle) {
     if (!t2fs_init) {
         initialize();
     }
+
+    record_t *dir = dirs[handle].dir;
+    if (dir == 0) {
+        printf("no dir opened with handle %d\n", handle);
+        return -1;
+    }
+
+    free(dir);
+    dir = 0;
 
     return 0;
 }
