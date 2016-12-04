@@ -32,6 +32,7 @@ int get_superblock(superblock_t *sb);
 
 int get_inode(int inode_number, inode_t *inode);
 int set_inode(int inode_number, inode_t *inode);
+int free_inode(int inode_number);
 
 int get_record(int block_number, int record_number, record_t *file);
 int set_record(int block_number, int record_number, record_t *file);
@@ -184,6 +185,63 @@ int set_inode(int inode_number, inode_t *inode) {
 
     if (write_sector(sector_number, sector) != 0) {
         return -1;
+    }
+
+    return 0;
+}
+
+int free_inode(int inode_number) {
+    inode_t inode;
+    if (get_inode(inode_number, &inode) != 0) {
+        return -1;
+    }
+    setBitmap2(BITMAP_INODE, inode_number, 0);
+
+    if (inode.dataPtr[0] == INVALID_PTR) {
+        return 0;
+    }
+    setBitmap2(BITMAP_DADOS, inode.dataPtr[0], 0);
+
+    if (inode.dataPtr[1] == INVALID_PTR) {
+        return 0;
+    }
+    setBitmap2(BITMAP_DADOS, inode.dataPtr[1], 0);
+
+    if (inode.singleIndPtr == INVALID_PTR) {
+        return 0;
+    }
+    setBitmap2(BITMAP_DADOS, inode.singleIndPtr, 0);
+
+    int i;
+    int j;
+    int s_ind;
+    int d_ind;
+    for (i = 0; i < 1024; ++i) {
+        s_ind = get_ind(inode.singleIndPtr, i);
+        if (s_ind == INVALID_PTR) {
+            return 0;
+        }
+        setBitmap2(BITMAP_DADOS, s_ind, 0);
+    }
+
+    if (inode.doubleIndPtr == INVALID_PTR) {
+        return 0;
+    }
+    setBitmap2(BITMAP_DADOS, inode.doubleIndPtr, 0);
+
+    for (i = 0; i < 1024; ++i) {
+        d_ind = get_ind(inode.doubleIndPtr, i);
+        if (d_ind == INVALID_PTR) {
+            return 0;
+        }
+        setBitmap2(BITMAP_DADOS, d_ind, 0);
+        for (j = 0; j < 1024; ++j) {
+            s_ind = get_ind(d_ind, j);
+            if (s_ind == INVALID_PTR) {
+                return 0;
+            }
+            setBitmap2(BITMAP_DADOS, s_ind, 0);
+        }
     }
 
     return 0;
@@ -435,16 +493,15 @@ int load_double_ind(char *filename, int block_number, record_t *file) {
 }
 
 int save_file(record_t *file, record_t *dir) {
-    if (file->TypeVal != TYPEVAL_REGULAR ||
-        dir->TypeVal != TYPEVAL_DIRETORIO) {
+    if (dir->TypeVal != TYPEVAL_DIRETORIO) {
         return -1;
     }
-
+    printf("save %s in %s\n", file->name, dir->name);
     inode_t inode;
     if (get_inode(dir->inodeNumber, &inode) != 0) {
         return -1;
     }
-
+    printf("save record in inode %d\n", dir->inodeNumber);
     if (inode.dataPtr[0] == INVALID_PTR) {
         inode.dataPtr[0] = searchBitmap2(BITMAP_DADOS, 0);
     }
@@ -483,7 +540,9 @@ int save_block(record_t *file, int block_number) {
     int i;
     record_t record;
     for (i = 0; i < 64; ++i) {
-        if (get_record(block_number, i, &record) != 0) {
+        if (get_record(block_number, i, &record) != 0 ||
+            strcmp(file->name, record.name) == 0) {
+            printf("compare %s and %s\n", file->name, record.name);
             if (set_record(block_number, i, file) == 0) {
                 return 0;
             }
@@ -583,7 +642,9 @@ FILE2 create2(char *filename) {
         end = strchr(begin, '/');
         if (end == 0) {
             end = begin + strlen(begin);
+            break;
         }
+        begin = end + 1;
     } while (end != filename + strlen(filename));
 
     file->TypeVal = TYPEVAL_REGULAR;
@@ -598,12 +659,15 @@ FILE2 create2(char *filename) {
     inode.dataPtr[1] = INVALID_PTR;
     inode.singleIndPtr = INVALID_PTR;
     inode.doubleIndPtr = INVALID_PTR;
+
+    printf("saving inode %d\n", inode_number);
     if (set_inode(inode_number, &inode) != 0) {
         free(dir);
         free(file);
         return -1;
     }
 
+    printf("saving file %s in %s\n", file->name, dir->name);
     if (save_file(file, dir) != 0) {
         free(dir);
         free(file);
@@ -625,6 +689,20 @@ FILE2 create2(char *filename) {
 int delete2(char *filename) {
     if (!t2fs_init) {
         initialize();
+    }
+
+    record_t dir;
+    record_t file;
+    if (load_file(filename, &dir, &file) != 0) {
+        printf("file %s doesn't exist\n", filename);
+        return -1;
+    }
+
+    file.TypeVal = TYPEVAL_INVALIDO;
+    free_inode(file.inodeNumber);
+
+    if (save_file(&file, &dir) != 0) {
+        return -1;
     }
 
     return 0;
