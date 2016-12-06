@@ -776,7 +776,7 @@ int close2(FILE2 handle) {
     return 0;
 }
 
-int get_n_block (inode_t *inode, int n, int *block_number) {
+int get_n_block(inode_t *inode, int n, int *block_number) {
     if ( n < 0) {
        return -1;
     }
@@ -810,6 +810,22 @@ int get_n_block (inode_t *inode, int n, int *block_number) {
     return 0;
 }
 
+int read_block( int *block_number, char *buffer, int size) {
+    int read = 0;
+    unsigned char sector[SECTOR_SIZE];
+    unsigned int sector_number = block_area
+                                 + block_number * superblock->blockSize
+                                 + ind_number / 64;
+    if (read_sector(sector_number, sector) != 0) {
+        return -1;
+    }
+    size-= SECTOR_SIZE;
+    buffer, sector
+    if (size == 0)
+       return 0;
+
+}
+
 int read2(FILE2 handle, char *buffer, int size) {
     if (!t2fs_init) {
         initialize();
@@ -833,16 +849,19 @@ int read2(FILE2 handle, char *buffer, int size) {
        return -1;
     }
 
-    int index_start = (offset / superblock->blockSize)-1;
-    int index_end = (offset+size / superblock->blockSize)-1;
-    int block_number[index_end-index_start+1];
-    int i;
-    for (i = index_start; i <= index_end; ++i) {
-        if (get_n_block(inode, i, block_number[i-index_start]) != 0) {
+    //for blocks in file
+
+    if (get_n_block(inode, i, block_number) != 0) {
            return -1;
     }
+    read_block(block_number, buffer2, superblock->blockSize);
 
-    
+
+    for (i =0; i < size; ++i) {
+    	buffer <- buffer2;
+    	if(size > superblock->blockSize)
+    		size-= superblock->blockSize;
+    }
 
     
 
@@ -874,8 +893,13 @@ int write2(FILE2 handle, char *buffer, int size) {
     }
 
 
-//atualizar tamanho do arquivo em bytes
+//atualizar tamanho do arquivo em bytes, em blocos
     return 0;
+}
+
+int delete_from_block(int *block_number, int size) {
+    
+
 }
 
 int truncate2(FILE2 handle) {
@@ -883,12 +907,27 @@ int truncate2(FILE2 handle) {
         initialize();
     }
     record_t *file = files[handle].file;
+    unsigned int p = files[handle].p;
     if (file == 0) {
         printf("no file opened with handle %d\n", handle);
         return -1;
     }
+    inode_t *inode;
+    if (get_inode(file->inodeNumber, inode) != 0) {
+       printf("error opening the file's inode\n");
+       return -1;
+    }
+    int index = (p / superblock->blockSize)-1;
+    int *block_number;
+   
+    get_n_block(inode, index, block_number);
+    delete_from_block(block_number, superblock->blockSize - index);
+    index++;
+    //até p - bytes == 0 
+    
 
-
+    file->bytesFileSize = p;
+    file->blocksFileSize = ;
     return 0;
 }
 
