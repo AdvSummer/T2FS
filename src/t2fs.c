@@ -57,6 +57,8 @@ int save_block(record_t *file, int block_number);
 int save_single_ind(record_t *file, int block_number);
 int save_double_ind(record_t *file, int block_number);
 
+int get_n_block (inode_t *inode, int n, int *block_number);
+
 int read2 (FILE2 handle, char *buffer, int size);
 int write2 (FILE2 handle, char *buffer, int size);
 int truncate2 (FILE2 handle);
@@ -774,6 +776,40 @@ int close2(FILE2 handle) {
     return 0;
 }
 
+int get_n_block (inode_t *inode, int n, int *block_number) {
+    if ( n < 0) {
+       return -1;
+    }
+    if (n < 2) {
+       if (inode->dataPtr[n] == INVALID_POINTER) {
+          return -1;
+       }
+       block_number = inode->dataPtr[n];
+       return 0;
+    }
+    if (n < 1026) {
+       if (inode->singleIndPtr == INVALID_POINTER) {
+          return -1;
+       }
+       block_number = get_ind(inode->singleIndPtr, n-2);
+       return 0;
+    }
+    if (inode->doubleIndPtr == INVALID_POINTER) {
+       return -1;
+    }
+    
+    int d_index = (n-2 / 1024) -1;
+    int *p_d = get_ind(inode->doubleIndPtr, d_index);
+
+    if (p_d == INVALID_POINTER) {
+       return -1;
+    }
+
+    int dd_index = (n-1026) - (d_index*1024);
+    block_number = get_ind(p_d, dd_index);
+    return 0;
+}
+
 int read2(FILE2 handle, char *buffer, int size) {
     if (!t2fs_init) {
         initialize();
@@ -786,7 +822,32 @@ int read2(FILE2 handle, char *buffer, int size) {
         return -1;
     }
 
-    // if (offset + size > file->bytesFileSize) read until EOF or error?
+    if (offset + (unsigned int) size >= file->bytesFileSize) {
+       printf("cannot read %d bytes from the file\n", size);
+       return -1;
+    }
+
+    inode_t *inode;
+    if (get_inode(file->inodeNumber, inode) != 0) {
+       printf("error opening the file's inode\n");
+       return -1;
+    }
+
+    int index_start = (offset / superblock->blockSize)-1;
+    int index_end = (offset+size / superblock->blockSize)-1;
+    int block_number[index_end-index_start+1];
+    int i;
+    for (i = index_start; i <= index_end; ++i) {
+        if (get_n_block(inode, i, block_number[i-index_start]) != 0) {
+           return -1;
+    }
+
+    
+
+    
+
+    // descobrir em que bloco lógico tá o pointer; trazer bloco pra memória, ler size bytes, ver se acabou pegar próximo etc
+    // if (offset + (unsigned int) size >= file->bytesFileSize) read until EOF or error?
     // seek offset; le bytes 0 a size-1 e grava em buffer; seek offset+size sem ler
     int i;
 
@@ -806,6 +867,14 @@ int write2(FILE2 handle, char *buffer, int size) {
         initialize();
     }
 
+    record_t *file = files[handle].file;
+    if (file == 0) {
+        printf("no file opened with handle %d\n", handle);
+        return -1;
+    }
+
+
+//atualizar tamanho do arquivo em bytes
     return 0;
 }
 
@@ -813,6 +882,12 @@ int truncate2(FILE2 handle) {
     if (!t2fs_init) {
         initialize();
     }
+    record_t *file = files[handle].file;
+    if (file == 0) {
+        printf("no file opened with handle %d\n", handle);
+        return -1;
+    }
+
 
     return 0;
 }
@@ -828,7 +903,7 @@ int seek2(FILE2 handle, unsigned int offset) {
         return -1;
     }
 
-    if (offset > file->bytesFileSize -1) {
+    if (offset >= file->bytesFileSize) {
        return -1;
     }
 
