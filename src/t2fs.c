@@ -25,6 +25,7 @@ static int block_area = 0;
 static struct files {
     record_t *dir;
     record_t *file;
+    unsigned int p;
 } files[MAX_OPEN_FILES] = {{0}};
 
 static struct dirs {
@@ -55,6 +56,11 @@ int save_file(record_t *file, record_t *dir);
 int save_block(record_t *file, int block_number);
 int save_single_ind(record_t *file, int block_number);
 int save_double_ind(record_t *file, int block_number);
+
+int read2 (FILE2 handle, char *buffer, int size);
+int write2 (FILE2 handle, char *buffer, int size);
+int truncate2 (FILE2 handle);
+int seek2 (FILE2 handle, unsigned int offset);
 
 int search_free_inode();
 
@@ -686,6 +692,7 @@ FILE2 create2(char *filename) {
 
     files[i].dir = dir;
     files[i].file = file;
+    files[i].p = 0;
 
     return i;
 }
@@ -733,6 +740,7 @@ FILE2 open2(char *filename) {
         file->TypeVal == TYPEVAL_REGULAR) {
         files[i].dir = dir;
         files[i].file = file;
+        files[i].p = 0;
         return i;
     } else {
         free(file);
@@ -771,6 +779,25 @@ int read2(FILE2 handle, char *buffer, int size) {
         initialize();
     }
 
+    record_t *file = files[handle].file;
+    unsigned int offset = files[handle].p;
+    if (file == 0) {
+        printf("no file opened with handle %d\n", handle);
+        return -1;
+    }
+
+    // if (offset + size > file->bytesFileSize) read until EOF or error?
+    // seek offset; le bytes 0 a size-1 e grava em buffer; seek offset+size sem ler
+    int i;
+
+    for (i=0; i < size; ++i) {
+        //buffer[i] = ; lê posição offset+i
+        if (read_sector(?,?,?) != 0) {
+	   return -1;
+        }
+        
+    }
+
     return 0;
 }
 
@@ -790,11 +817,22 @@ int truncate2(FILE2 handle) {
     return 0;
 }
 
-int seek2(FILE2 handle, DWORD offset) {
+int seek2(FILE2 handle, unsigned int offset) {
     if (!t2fs_init) {
         initialize();
     }
 
+    record_t *file = files[handle].file;
+    if (file == 0) {
+        printf("no file opened with handle %d\n", handle);
+        return -1;
+    }
+
+    if (offset > file->bytesFileSize -1) {
+       return -1;
+    }
+
+    files[handle].p = offset;
     return 0;
 }
 
