@@ -57,7 +57,9 @@ int save_block(record_t *file, int block_number);
 int save_single_ind(record_t *file, int block_number);
 int save_double_ind(record_t *file, int block_number);
 
-int get_n_block (inode_t *inode, int n, int *block_number);
+int get_n_block (inode_t *inode, int n, int block_number);
+int read_from_sector( int sector_number, char *buffer, int n);
+int read_from_block( int block_number, char *buffer, int n);
 
 int read2 (FILE2 handle, char *buffer, int size);
 int write2 (FILE2 handle, char *buffer, int size);
@@ -776,32 +778,33 @@ int close2(FILE2 handle) {
     return 0;
 }
 
-int get_n_block(inode_t *inode, int n, int *block_number) {
+int get_n_block(inode_t *inode, int n, int block_number) {
     if ( n < 0) {
        return -1;
     }
+    printf("get_n_block\n");
     if (n < 2) {
-       if (inode->dataPtr[n] == INVALID_POINTER) {
+       if (inode->dataPtr[n] == INVALID_PTR) {
           return -1;
        }
        block_number = inode->dataPtr[n];
        return 0;
     }
     if (n < 1026) {
-       if (inode->singleIndPtr == INVALID_POINTER) {
+       if (inode->singleIndPtr == INVALID_PTR) {
           return -1;
        }
        block_number = get_ind(inode->singleIndPtr, n-2);
        return 0;
     }
-    if (inode->doubleIndPtr == INVALID_POINTER) {
+    if (inode->doubleIndPtr == INVALID_PTR) {
        return -1;
     }
     
     int d_index = (n-2 / 1024) -1;
-    int *p_d = get_ind(inode->doubleIndPtr, d_index);
+    int p_d = get_ind(inode->doubleIndPtr, d_index);
 
-    if (p_d == INVALID_POINTER) {
+    if (p_d == INVALID_PTR) {
        return -1;
     }
 
@@ -810,20 +813,40 @@ int get_n_block(inode_t *inode, int n, int *block_number) {
     return 0;
 }
 
-int read_block( int *block_number, char *buffer, int size) {
+int read_from_sector( int sector_number, char *buffer, int n) { //read n bytes from sector
     int read = 0;
     unsigned char sector[SECTOR_SIZE];
-    unsigned int sector_number = block_area
-                                 + block_number * superblock->blockSize
-                                 + ind_number / 64;
+
     if (read_sector(sector_number, sector) != 0) {
         return -1;
     }
-    size-= SECTOR_SIZE;
-    buffer, sector
-    if (size == 0)
-       return 0;
+    int i;
+    for (i=0; i< SECTOR_SIZE; ++i) {
+    	if (read >= n) {
+    		break;
+    	}
+    	buffer[read] = sector[i];
+    	read++;
+    }
+    return read; //returns either n or SECTOR_SIZE bytes
+}
 
+int read_from_block( int block_number, char *buffer, int n) { //read n bytes from block
+	int read = 0;
+	int counter;
+    unsigned int sector_number = block_area
+                                + block_number * superblock->blockSize;
+    int i = 0;
+    while (read < n && i < superblock->blockSize) {
+    	counter = read_from_sector(sector_number+i, buffer+read, n);
+    	if(counter < 0) {
+    		return -1;
+    	}
+    	read += counter;
+    	i++;
+    	n -= read;
+    }
+    return read; //returns either n bytes or blockSize*SECTOR_SIZE (full block) bytes
 }
 
 int read2(FILE2 handle, char *buffer, int size) {
@@ -839,46 +862,40 @@ int read2(FILE2 handle, char *buffer, int size) {
     }
 
     if (offset + (unsigned int) size >= file->bytesFileSize) {
+
        printf("cannot read %d bytes from the file\n", size);
        return -1;
     }
 
-    inode_t *inode;
-    if (get_inode(file->inodeNumber, inode) != 0) {
+    inode_t inode;
+    if (get_inode(file->inodeNumber, &inode) != 0) {
        printf("error opening the file's inode\n");
        return -1;
     }
 
-    //for blocks in file
+    int index = (offset / superblock->blockSize*SECTOR_SIZE);
+    if (index > 0) {
+    	index-=1;
+    }
+    int i = 0;
+    int counter = 0;
+    int read=0;
+    int block_number = 0;
 
-    if (get_n_block(inode, i, block_number) != 0) {
+    while (read < size){
+    	if (get_n_block(&inode, index+i, block_number) != 0) {
            return -1;
-    }
-    read_block(block_number, buffer2, superblock->blockSize);
-
-
-    for (i =0; i < size; ++i) {
-    	buffer <- buffer2;
-    	if(size > superblock->blockSize)
-    		size-= superblock->blockSize;
-    }
-
-    
-
-    // descobrir em que bloco lógico tá o pointer; trazer bloco pra memória, ler size bytes, ver se acabou pegar próximo etc
-    // if (offset + (unsigned int) size >= file->bytesFileSize) read until EOF or error?
-    // seek offset; le bytes 0 a size-1 e grava em buffer; seek offset+size sem ler
-    int i;
-
-    for (i=0; i < size; ++i) {
-        //buffer[i] = ; lê posição offset+i
-        if (read_sector(?,?,?) != 0) {
-	   return -1;
-        }
-        
-    }
-
-    return 0;
+    	}
+    	counter = read_from_block(block_number, buffer+read, size);
+    	if (counter < 0) {
+    		return -1;
+    	}
+    	read += counter;
+    	i++;
+	}
+ 
+ 	seek2(handle, offset+read);
+    return read-size;
 }
 
 int write2(FILE2 handle, char *buffer, int size) {
@@ -897,38 +914,17 @@ int write2(FILE2 handle, char *buffer, int size) {
     return 0;
 }
 
-int delete_from_block(int *block_number, int size) {
+int delete_from_block(int *block_number, int size, int begin, int end) {
     
-
+return 0;
 }
 
 int truncate2(FILE2 handle) {
     if (!t2fs_init) {
-        initialize();
+       initialize();
     }
-    record_t *file = files[handle].file;
-    unsigned int p = files[handle].p;
-    if (file == 0) {
-        printf("no file opened with handle %d\n", handle);
-        return -1;
-    }
-    inode_t *inode;
-    if (get_inode(file->inodeNumber, inode) != 0) {
-       printf("error opening the file's inode\n");
-       return -1;
-    }
-    int index = (p / superblock->blockSize)-1;
-    int *block_number;
-   
-    get_n_block(inode, index, block_number);
-    delete_from_block(block_number, superblock->blockSize - index);
-    index++;
-    //até p - bytes == 0 
-    
 
-    file->bytesFileSize = p;
-    file->blocksFileSize = ;
-    return 0;
+    return -1;
 }
 
 int seek2(FILE2 handle, unsigned int offset) {
